@@ -1,0 +1,6 @@
+# config/system.yml
+md5_data_path: './md5.txt'
+chat_history_path: './chat_history'
+chat_state_db_path: './chat_state_db/chat_state.db'
+mcp_server_path: './mcp_server.py'
+home_mcp_server_path: './mcp_services/home_device_mcp_server.py'

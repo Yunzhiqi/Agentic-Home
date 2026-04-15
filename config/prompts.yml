@@ -1,0 +1,5 @@
+system_prompt_path: prompts/system_prompt.txt
+rag_summarize_path: prompts/rag_summarize.txt
+report_prompt_path: prompts/report_prompt.txt
+frontend_prompt_path: prompts/frontend_prompt.txt
+iot_backend_prompt_path: prompts/iot_backend_prompt.txt

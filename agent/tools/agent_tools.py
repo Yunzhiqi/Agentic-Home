@@ -1,0 +1,62 @@
+"""
+智能家居系统核心工具集
+包含知识库查询、报告生成、人工转接和设备控制移交功能
+"""
+import sys
+import os
+from langchain_core.tools import tool
+
+# 确保能够正常导入项目内部模块
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from rag import rag_service
+
+
+@tool(description='从向量数据库中检索参考资料')
+def rag_summarize(quary: str) -> str:
+    """
+    从 RAG 知识库中检索相关信息
+    
+    Args:
+        quary: 查询问题
+        
+    Returns:
+        检索到的参考资料
+    """
+    rag = rag_service.RagSummarizeService()
+    return rag.rag_summarize(quary)
+
+
+@tool(description="无入参，无返回值，调用后触发中间件自动为报告生成的场景动态注入上下文信息，为后续提示词切换提供上下文信息")
+def fill_context_for_report():
+    """
+    触发报告生成模式
+    调用此工具后，系统会切换到报告生成的提示词模式
+    """
+    return
+
+
+@tool(description="当用户遇到复杂设备故障、表达强烈不满，或主动要求转接人工客服时调用此工具。无入参。")
+def transfer_to_human():
+    """
+    转接人工客服
+    
+    Returns:
+        转接提示信息
+    """
+    # 这个返回值会记录到上下文中，实际上前端可以通过识别图的中断状态来给用户提示
+    return "系统提示：已为您呼叫人工客服，请耐心等待。"
+
+
+@tool(description="当用户的意图是控制家里的智能设备（如开灯、扫地、调空调等）或查询实时物理环境状态时，必须调用此工具。无入参。")
+def transfer_to_iot_controller():
+    """
+    移交智能家居控制中枢
+    将设备控制任务从前台移交给后台 IoT 控制系统
+    
+    Returns:
+        移交提示信息
+    """
+    return "系统提示：任务已移交智能家居控制中枢。"

@@ -1,0 +1,2 @@
+chat_model_name: deepseek-chat
+embbeding_fun_name: text-embedding-v4

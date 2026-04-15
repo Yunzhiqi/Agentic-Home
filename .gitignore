@@ -1,0 +1,79 @@
+# =========================
+# Python 相关的忽略规则
+# =========================
+
+# 字节码文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境 
+venv/
+env/
+.venv/
+.env/
+ENV/
+
+# 环境变量文件
+.env
+
+# 测试和覆盖率报告文件
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+logs/
+*.log
+*.log.*
+
+# 打包和构建生成的文件夹
+build/
+dist/
+*.egg-info/
+*.egg
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+chroma_db/
+
+# Jupyter Notebook 的检查点
+.ipynb_checkpoints
+
+# =========================
+# 编辑器和系统相关的忽略规则
+# =========================
+
+# VS Code 配置
+.vscode/
+
+# PyCharm/IntelliJ 配置
+.idea/
+
+# macOS 系统文件
+.DS_Store
+
+# Windows 系统文件
+Thumbs.db
+Desktop.ini
+
+# 临时文件和备份文件
+*.bak
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+~*
+
+# 敏感文件
+secrets*
+*.key
+*.pem
+*.p12
+*.crt
+*.cer
+*.pfx
+*.jks

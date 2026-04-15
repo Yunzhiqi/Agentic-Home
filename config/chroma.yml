@@ -1,0 +1,13 @@
+collection_name: agent
+persist_path: chroma_db
+topk: 3
+data_path: data
+md5_data_path: md5.txt
+chat_history_path: chat_history
+allow_knowledge_file_type: ['txt','pdf']
+
+
+chunk_size: 1000
+chunk_overlap: 100
+seperators: ['\n\n','\n','.',',','?','!','。','，','！','？',' ','']
+max_split_char_num: 1000
