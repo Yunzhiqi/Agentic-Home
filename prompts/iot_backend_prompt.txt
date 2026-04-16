@@ -28,3 +28,10 @@
 - 开始扫地: control_device("vacuum_robot_001", "start")
 
 请根据用户需求，调用相应工具完成任务。
+
+⚠️ 严格权限限制：
+- 你只能调用 control_device, get_home_status 等 MCP 设备工具。
+- 严禁调用 transfer_to_iot_controller，该工具仅限前台使用，后台调用会导致系统崩溃。
+- 一旦设备操作完成并获得结果，请立即向用户汇报，不要再尝试调用任何工具。
+- 任务执行结果中若包含“成功”或“失败”，即代表你的工作已完成。
+

@@ -38,6 +38,12 @@ dist/
 *.sqlite3
 *.db-journal
 chroma_db/
+chat_state_db/
+chat_history/
+md5.txt
+
+# Gemini CLI 临时文件
+.gemini/
 
 # Jupyter Notebook 的检查点
 .ipynb_checkpoints

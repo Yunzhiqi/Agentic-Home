@@ -15,17 +15,26 @@ from rag import rag_service
 
 
 @tool(description='从向量数据库中检索参考资料')
-def rag_summarize(quary: str) -> str:
+def rag_summarize(quary: str, config: dict = None) -> str:
     """
     从 RAG 知识库中检索相关信息
     
     Args:
         quary: 查询问题
+        config: 运行时配置，用于获取 pre-initialized 的 RAG 服务
         
     Returns:
         检索到的参考资料
     """
-    rag = rag_service.RagSummarizeService()
+    # 尝试从 config 中获取预初始化的 rag_service，以提高性能
+    rag = None
+    if config and 'configurable' in config:
+        rag = config['configurable'].get('rag_service')
+    
+    if not rag:
+        from rag import rag_service
+        rag = rag_service.RagSummarizeService()
+        
     return rag.rag_summarize(quary)
 
 

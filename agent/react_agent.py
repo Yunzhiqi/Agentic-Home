@@ -54,17 +54,18 @@ class ReactAgent:
         """
         logger.info("[ReactAgent] 初始化统一 Agent（Handoff 架构）")
         
+        # 初始化 Rich Console 用于实时交互显示
+        from rich.console import Console
+        self.console = Console()
+        
         # 初始化 MCP 客户端（智能家居设备控制）
         logger.info("[MCP] 正在连接智能家居 MCP Server...")
-        # home_mcp_path = system_config.get("home_mcp_server_path", "home_device_mcp_server.py")
-        # self.mcp_client = UniversalSyncMCPClient(get_abs_path(home_mcp_path))
         mcp_server_file = "mcp_services/home_device_mcp_server.py" 
         self.mcp_client = UniversalSyncMCPClient(get_abs_path(mcp_server_file))
         self.mcp_tools = self.mcp_client.tools
         logger.info(f"[MCP] 成功拉取到 {len(self.mcp_tools)} 个智能家居工具")
         
         # 工具物理隔离
-        # 前台工具：聊天、知识库、报告、转接
         self.frontend_tools = [
             rag_summarize, 
             fill_context_for_report, 
@@ -72,18 +73,55 @@ class ReactAgent:
             transfer_to_iot_controller
         ]
         
-        # 后台工具：仅 MCP 设备控制工具
         self.backend_tools = self.mcp_tools
         
-        # 绑定工具到模型
+        from rag.rag_service import RagSummarizeService
+        self.rag_service = RagSummarizeService()
+        
         self.frontend_model = chat_model.bind_tools(self.frontend_tools)
         self.backend_model = chat_model.bind_tools(self.backend_tools)
         
-        # 构建统一的 LangGraph
         self._build_graph()
         
         logger.info("[ReactAgent] 初始化完成")
-    
+
+    def _sanitize_messages(self, messages: list[BaseMessage]) -> list[BaseMessage]:
+        """
+        原地清洗消息逻辑，确保 content 均为字符串，同时严格保留所有元数据和消息顺序。
+        针对 DeepSeek 等 API，特别处理带 tool_calls 的 AIMessage 和其后的 ToolMessage 序列。
+        """
+        sanitized = []
+        for msg in messages:
+            # 浅拷贝消息对象
+            new_msg = msg.copy()
+            
+            content = new_msg.content
+            # 处理列表格式的 content
+            if isinstance(content, list):
+                text_content = ""
+                for part in content:
+                    if isinstance(part, str):
+                        text_content += part
+                    elif isinstance(part, dict) and "text" in part:
+                        text_content += part["text"]
+                    else:
+                        text_content += str(part)
+                content = text_content
+            
+            # DeepSeek 特殊校验：带 tool_calls 的 AIMessage 建议 content 为 "" 或 None
+            if hasattr(new_msg, "tool_calls") and new_msg.tool_calls:
+                # 如果有工具调用，很多 API 不允许 content 有实质内容
+                new_msg.content = ""
+            elif content is None:
+                new_msg.content = ""
+            elif not isinstance(content, str):
+                new_msg.content = str(content)
+            else:
+                new_msg.content = content
+                
+            sanitized.append(new_msg)
+        return sanitized
+
     def _build_graph(self):
         """构建统一的 LangGraph"""
         workflow = StateGraph(AgentState)
@@ -92,7 +130,7 @@ class ReactAgent:
         workflow.add_node("frontend", self.frontend_node)
         workflow.add_node("iot_backend", self.iot_backend_node)
         workflow.add_node("frontend_tools", ToolNode(self.frontend_tools))
-        workflow.add_node("mcp_tools", ToolNode(self.backend_tools))
+        workflow.add_node("mcp_tools", self.mcp_tools_node) # 自定义节点
         workflow.add_node("human", self.human_node)
         
         # 设置边和路由
@@ -147,7 +185,41 @@ class ReactAgent:
         
         self.app = workflow.compile(checkpointer=memory)
         logger.info("[Graph] LangGraph 编译完成")
-    
+
+    def mcp_tools_node(self, state: AgentState):
+        """自定义工具执行节点，增加可视化显示和逻辑拦截"""
+        from langchain_core.messages import ToolMessage
+        
+        last_message = state["messages"][-1]
+        tool_calls = getattr(last_message, "tool_calls", [])
+        
+        # 拦截机制：检测后台是否在幻觉调用前台工具
+        frontend_tool_names = ["transfer_to_iot_controller", "transfer_to_human", "rag_summarize", "fill_context_for_report"]
+        
+        valid_tool_calls = []
+        error_messages = []
+        
+        for call in tool_calls:
+            tool_name = call.get("name")
+            if tool_name in frontend_tool_names:
+                logger.warning(f"[IoT Backend Hallucination] 后台错误调用了前台工具: {tool_name}")
+                error_messages.append(ToolMessage(
+                    content=f"错误：后台中枢无法直接调用前台工具 '{tool_name}'。请直接总结任务执行结果，或使用 MCP 提供的设备控制工具。",
+                    tool_call_id=call.get("id", "")
+                ))
+            else:
+                valid_tool_calls.append(call)
+                args = call.get("args")
+                self.console.print(f"  [bold cyan]🔧 执行设备控制:[/bold cyan] [yellow]{tool_name}[/yellow] (参数: {args})")
+        
+        # 如果有拦截到的错误，立即返回并停止执行该工具
+        if error_messages:
+            return {"messages": error_messages}
+        
+        # 使用标准 ToolNode 执行实际逻辑
+        node = ToolNode(self.backend_tools)
+        return node.invoke(state)
+
     # ==========================================
     # 节点定义
     # ==========================================
@@ -158,9 +230,47 @@ class ReactAgent:
         messages = state["messages"]
         is_report = state.get("is_report", False)
         
-        # 选择[REDACTED]
+        # 判定是否为系统自动化事件
+        last_msg_content = messages[-1].content if messages else ""
+        is_system_event = "【系统自动化指令" in str(last_msg_content) or "【系统底层自动化" in str(last_msg_content)
+        
+        # 更强劲的后台执行检测（防止循环递归）
+        has_iot_returned = False
+        iot_tool_count = 0
+        for msg in reversed(messages):
+            # 统计 IoT 节点的活动
+            if hasattr(msg, "tool_call_id"):
+                # 如果发现过 ToolMessage 且来源是设备控制，说明已经进行过后台操作
+                iot_tool_count += 1
+            
+            # 检查后台发出的总结文本
+            if hasattr(msg, "content") and msg.content and not getattr(msg, "tool_calls", None):
+                content_str = str(msg.content)
+                if any(k in content_str for k in ["成功", "失败", "已打开", "已关闭", "调整为", "完成", "记录"]):
+                    has_iot_returned = True
+                    break
+        
+        # 如果在同一个 Session 中工具交互次数过多，强制终止以保护上下文
+        if len(messages) > 15:
+            has_iot_returned = True
+        
+        # 选择提示词
         if is_report:
             base_prompt = report_prompt
+        elif has_iot_returned or iot_tool_count >= 2:
+            # 强化总结逻辑：防止循环
+            base_prompt = (
+                "【强制总结指令】任务执行链条已完成。\n"
+                "历史记录中已有详细的工具执行结果，请直接针对这些结果给用户一个结论。\n"
+                "严格禁令：严禁再次尝试调用 transfer_to_iot_controller 或任何控制工具！"
+            )
+        elif is_system_event:
+            # 系统事件模式
+            base_prompt = (
+                "你现在是智能家居系统的‘内核监控模式’。当前输入是传感器触发的系统事件，非人类对话。\n"
+                "你的唯一目标是：快速决策并执行。禁止任何礼貌用语。\n"
+                "汇报格式：[处理结果] + 简要说明。如果是紧急事件，必须优先调用 transfer_to_iot_controller。"
+            )
         else:
             base_prompt = system_prompt
         
@@ -168,23 +278,11 @@ class ReactAgent:
         frontend_system_prompt = frontend_prompt.format(system_prompt=base_prompt)
         system_msg = SystemMessage(content=frontend_system_prompt)
         
-        messages_with_system = [system_msg] + list(messages)
+        # 使用加固后的清洗逻辑
+        sanitized_history = self._sanitize_messages(messages)
+        messages_with_system = [system_msg] + sanitized_history
         
-        # 修复：遍历清理非字符串格式的内容，避免 DeepSeek 报错
-        # 只转换 HumanMessage 和 AIMessage 的 content，保留 ToolMessage 的结构
-        from langchain_core.messages import HumanMessage, AIMessage
-        for msg in messages_with_system:
-            if isinstance(msg.content, list):
-                # 如果是 HumanMessage 或 AIMessage，转换 content 为字符串
-                if isinstance(msg, (HumanMessage, AIMessage)):
-                    msg.content = str(msg.content)
-                # 注意：ToolMessage 的 content 可能是列表，但不应转换，因为会被 ToolNode 处理
-                # SystemMessage 的 content 应该是字符串
-        
-        # 调试：打印消息类型
         logger.debug(f"[Frontend] 发送给模型的消息数量: {len(messages_with_system)}")
-        for i, msg in enumerate(messages_with_system):
-            logger.debug(f"[Frontend] 消息 {i}: type={type(msg).__name__}, content_type={type(msg.content).__name__ if hasattr(msg, 'content') else 'N/A'}")
         
         response = self.frontend_model.invoke(messages_with_system)
         
@@ -200,17 +298,10 @@ class ReactAgent:
         
         # 构建后台提示词
         system_msg = SystemMessage(content=iot_backend_prompt)
-        messages_with_system = [system_msg] + list(messages)
         
-        # 修复：遍历清理非字符串格式的内容，避免 DeepSeek 报错
-        # 只转换 HumanMessage 和 AIMessage 的 content，保留 ToolMessage 的结构
-        from langchain_core.messages import HumanMessage, AIMessage
-        for msg in messages_with_system:
-            if isinstance(msg.content, list):
-                # 如果是 HumanMessage 或 AIMessage，转换 content 为字符串
-                if isinstance(msg, (HumanMessage, AIMessage)):
-                    msg.content = str(msg.content)
-                # 注意：ToolMessage 的 content 可能是列表，但不应转换，因为会被 ToolNode 处理
+        # 使用加固后的清洗逻辑
+        sanitized_history = self._sanitize_messages(messages)
+        messages_with_system = [system_msg] + sanitized_history
         
         response = self.backend_model.invoke(messages_with_system)
         
@@ -330,7 +421,14 @@ class ReactAgent:
         """
         logger.info(f"[ReactAgent] 收到用户请求: {query}")
         
-        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 20}
+        # 将 rag_service 注入到 configurable 中，以便工具复用
+        config = {
+            "configurable": {
+                "thread_id": thread_id,
+                "rag_service": self.rag_service
+            }, 
+            "recursion_limit": 20
+        }
         
         # 检查是否处于人工模式
         current_state = self.app.get_state(config)
@@ -367,7 +465,14 @@ class ReactAgent:
         """
         logger.info(f"[ReactAgent] 收到用户请求: {query}")
         
-        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 20}
+        # 将 rag_service 注入到 configurable 中，以便工具复用
+        config = {
+            "configurable": {
+                "thread_id": thread_id,
+                "rag_service": self.rag_service
+            }, 
+            "recursion_limit": 20
+        }
         
         # 检查是否处于人工模式
         current_state = self.app.get_state(config)

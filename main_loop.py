@@ -20,12 +20,28 @@ if project_root not in sys.path:
 from agent.react_agent import ReactAgent
 from state_models import get_home_state
 from utils.log import logger
+from utils.config_hander import automation_config, debug_commands_config
 
 # 初始化 Rich Console
 console = Console()
 
+# 载入规则和指令映射
+automation_rules = automation_config.get("rules", [])
+debug_commands = debug_commands_config.get("commands", {})
+
+logger.info(f"[MainLoop] 成功载入 {len(automation_rules)} 条自动化规则和 {len(debug_commands)} 条调试指令")
+
 # 事件队列：用于存储传感器事件
 event_queue = asyncio.Queue()
+
+# 稳定的 thread_id 以保留会话记忆 (设为全局以便 /clear 修改)
+user_thread_id = "user_chat_001"
+system_thread_id = "system_auto_001"
+
+# 任务执行锁：确保 Agent 同一时间只处理一个逻辑链条
+agent_lock = asyncio.Lock()
+# 紧急任务标记
+is_priority_processing = False
 
 
 # ==========================================
@@ -33,7 +49,7 @@ event_queue = asyncio.Queue()
 # ==========================================
 async def sensor_simulator_loop():
     """
-    传感器模拟器：每隔 10 秒随机生成一个环境事件
+    传感器模拟器：每隔 20 秒随机生成一个环境事件
     """
     # 预定义的传感器事件
     sensor_events = [
@@ -50,7 +66,7 @@ async def sensor_simulator_loop():
     ]
     
     while True:
-        await asyncio.sleep(60)  # 每 10 秒触发一次
+        await asyncio.sleep(20)  # 每 20 秒触发一次
         
         # 随机选择一个事件
         room, event_desc = random.choice(sensor_events)
@@ -85,20 +101,77 @@ async def user_input_loop():
 
 
 # ==========================================
+# 调试输入监听器 (支持 / 命令)
+# ==========================================
+async def debug_input_loop():
+    """
+    调试输入监听器：支持通过 / 命令模拟系统事件
+    """
+    loop = asyncio.get_event_loop()
+    
+    # 引用外部变量以便修改 thread_id 实现 /clear
+    global user_thread_id, system_thread_id
+    
+    while True:
+        # 在异步环境中快速读取用户输入
+        user_input = await loop.run_in_executor(None, input, "Debug Mode > ")
+        
+        cmd = user_input.strip()
+        if not cmd:
+            continue
+            
+        if cmd.lower() in ["exit", "quit", "退出"]:
+            console.print("[bold red]系统退出[/bold red]")
+            os._exit(0)
+            
+        if cmd == "/clear":
+            # 通过更换 thread_id 变相清除历史记录
+            import time
+            new_suffix = int(time.time())
+            user_thread_id = f"user_chat_{new_suffix}"
+            system_thread_id = f"system_auto_{new_suffix}"
+            console.print(f"[bold green]✓ 对话历史已重置 (新 Thread ID: {new_suffix})[/bold green]")
+            continue
+
+        if cmd in ["/?", "/help"]:
+            # 本地处理帮助信息，不发给大模型
+            console.print(Panel(
+                Text("\n".join([f"{k}: {v}" for k, v in debug_commands.items()]) + "\n/clear: 重置对话历史记录", style="cyan"),
+                title="调试模式指令帮助",
+                border_style="cyan"
+            ))
+            continue
+            
+        if cmd.startswith("/"):
+            # 尝试匹配快捷命令
+            event_desc = debug_commands.get(cmd)
+            if event_desc:
+                console.print(f"[dim]快捷指令匹配成功: {cmd} -> {event_desc}[/dim]")
+                await event_queue.put(f"[传感器事件] {event_desc}")
+            else:
+                console.print(f"[bold red]错误：未找到快捷指令 {cmd}[/bold red]")
+        else:
+            # 普通输入视为用户请求
+            await event_queue.put(f"[用户请求] {cmd}")
+
+
+# ==========================================
 # 主事件循环
 # ==========================================
-async def agentic_main_loop():
+async def agentic_main_loop(mode="full"):
     """
     主事件循环：同时监听用户输入和传感器事件
     """
+    is_debug = mode == "debug"
+
     console.print(Panel.fit(
-        "[bold cyan]智能家居事件驱动系统[/bold cyan]\n"
+        f"[bold cyan]智能家居事件驱动系统 ({'调试模式' if is_debug else '完整模式'})[/bold cyan]\n"
         "支持用户对话和传感器事件的双向触发\n"
-        "[green]用户输入[/green] | [red]系统事件[/red]",
+        "[green]用户输入[/green] | [red]系统事件[/red] | [yellow]自动化联动[/yellow]",
         title="Agentic Home",
         border_style="cyan"
     ))
-    
+
     # 初始化智能家居 Agent
     console.print("[yellow]正在初始化智能家居系统...[/yellow]")
     try:
@@ -107,89 +180,118 @@ async def agentic_main_loop():
     except Exception as e:
         console.print(f"[bold red]✗ 系统初始化失败: {e}[/bold red]")
         console.print("[yellow]提示：请确保已配置 OPENAI_API_KEY 或 DEEPSEEK_API_KEY 环境变量[/yellow]")
-        
+
         return
-    
-    # 启动传感器模拟器
-    asyncio.create_task(sensor_simulator_loop())
-    
-    # 启动用户输入监听器
-    asyncio.create_task(user_input_loop())
-    
-    console.print("[dim]输入您的指令，或等待传感器事件触发...[/dim]")
+
+    # 根据模式启动不同的输入监听器
+    if is_debug:
+        console.print("[bold magenta]调试模式已启动：传感器模拟器已禁用，请通过 / 指令手动模拟事件[/bold magenta]")
+        asyncio.create_task(debug_input_loop())
+    else:
+        # 启动传感器模拟器
+        asyncio.create_task(sensor_simulator_loop())
+        # 启动标准用户输入监听器
+        asyncio.create_task(user_input_loop())
+
+    console.print("[dim]输入您的指令，或使用 /command 模拟事件...[/dim]")
     console.print("[dim]输入 'exit' 或 'quit' 退出系统[/dim]\n")
-    
-    # 主循环：处理队列中的事件
+
+    # 定义异步处理函数，内部通过 agent_lock 实现串行化
+    async def process_message(msg):
+        global is_priority_processing
+        
+        # 解析优先级：根据消息内容判定
+        # 注意：这里我们通过检查消息的前缀或内容来判断是否是紧急事件
+        is_high_priority = "优先级：紧急" in msg or "🚨 系统紧急事件" in msg
+        
+        # 尝试匹配自动化规则以获取优先级
+        if "[传感器事件]" in msg:
+            event_content = msg.replace("[传感器事件]", "").strip()
+            for rule in automation_rules:
+                if rule["event_keyword"] in event_content:
+                    if rule.get("priority") == "high":
+                        is_high_priority = True
+                    break
+
+        # 竞争执行锁 (确保串行执行)
+        async with agent_lock:
+            if is_high_priority:
+                is_priority_processing = True
+                
+            if msg.startswith("[用户请求]"):
+                user_input = msg.replace("[用户请求]", "").strip()
+                console.print(Panel(
+                    Text(user_input, style="bold green"),
+                    title=f"User [{datetime.now().strftime('%H:%M:%S')}]",
+                    border_style="green"
+                ))
+                try:
+                    loop = asyncio.get_event_loop()
+                    response = await loop.run_in_executor(None, lambda: agent.execute(user_input, thread_id=user_thread_id))
+                    console.print(Panel(
+                        Text(response, style="white"),
+                        title=f"Agent [{datetime.now().strftime('%H:%M:%S')}]",
+                        border_style="blue"
+                    ))
+                except Exception as e:
+                    console.print(f"[bold red]处理失败: {e}[/bold red]")
+            
+            elif msg.startswith("[传感器事件]"):
+                event_content = msg.replace("[传感器事件]", "").strip()
+                
+                # 再次匹配规则用于显示和 Prompt 注入
+                matched_action = ""
+                rule_priority = "normal"
+                for rule in automation_rules:
+                    if rule["event_keyword"] in event_content:
+                        matched_action = rule["action_hint"]
+                        rule_priority = rule.get("priority", "normal")
+                        break
+                
+                current_event_is_high = rule_priority == "high"
+                display_style = "bold red" if current_event_is_high else "bold yellow"
+                title_prefix = "🚨 系统紧急事件" if current_event_is_high else "📡 系统环境事件"
+                
+                console.print(Panel(
+                    Text(f"{event_content}\n" + (f"[dim]匹配规则: {matched_action}[/dim]" if matched_action else ""), style=display_style),
+                    title=f"{title_prefix} [{datetime.now().strftime('%H:%M:%S')}]",
+                    border_style="red" if current_event_is_high else "yellow"
+                ))
+                
+                try:
+                    prompt_prefix = "【系统自动化指令 - 优先级：紧急】" if current_event_is_high else "【系统自动化指令 - 优先级：常规】"
+                    action_suggestion = f"\n[建议操作建议]: {matched_action}" if matched_action else ""
+                    
+                    prompt = (
+                        f"{prompt_prefix}\n"
+                        f"环境发生变化：'{event_content}'"
+                        f"{action_suggestion}\n"
+                        f"你的任务：\n"
+                        f"1. 立即判断是否需要操作设备。\n"
+                        f"2. 直接调用 transfer_to_iot_controller 移交执行，不要询问用户。\n"
+                        f"3. 保持专业简练。"
+                    )
+                    loop = asyncio.get_event_loop()
+                    response = await loop.run_in_executor(None, lambda: agent.execute(prompt, thread_id=system_thread_id))
+                    console.print(Panel(
+                        Text(response, style="yellow"),
+                        title=f"Agent (Auto) [{datetime.now().strftime('%H:%M:%S')}]",
+                        border_style="yellow"
+                    ))
+                except Exception as e:
+                    console.print(f"[bold red]处理失败: {e}[/bold red]")
+            
+            # 任务结束，释放紧急标记
+            if is_high_priority:
+                is_priority_processing = False
+        
+        console.print()
+
+    # 主循环：从队列获取消息并启动协程
     while True:
-        # 从队列中获取事件（阻塞等待）
         message = await event_queue.get()
-        
-        # 解析事件类型
-        if message.startswith("[用户请求]"):
-            # 用户输入事件
-            user_input = message.replace("[用户请求]", "").strip()
-            
-            # 使用绿色显示用户输入
-            console.print(Panel(
-                Text(user_input, style="bold green"),
-                title=f"User [{datetime.now().strftime('%H:%M:%S')}]",
-                border_style="green"
-            ))
-            
-            try:
-                # 调用 Agent 处理用户请求（使用线程池避免阻塞）
-                loop = asyncio.get_event_loop()
-                # 为用户请求使用唯一的 thread_id，避免状态污染
-                import time
-                user_thread_id = f"user_{int(time.time())}"
-                response = await loop.run_in_executor(None, lambda: agent.execute(user_input, thread_id=user_thread_id))
-                
-                # 显示 Agent 回复
-                console.print(Panel(
-                    Text(response, style="white"),
-                    title=f"Agent [{datetime.now().strftime('%H:%M:%S')}]",
-                    border_style="blue"
-                ))
-            except Exception as e:
-                console.print(f"[bold red]处理失败: {e}[/bold red]")
-        
-        elif message.startswith("[传感器事件]"):
-            # 传感器事件
-            event_content = message.replace("[传感器事件]", "").strip()
-            
-            # 使用红色显示系统事件
-            console.print(Panel(
-                Text(event_content, style="bold red"),
-                title=f"System Event [{datetime.now().strftime('%H:%M:%S')}]",
-                border_style="red"
-            ))
-            
-            try:
-                # 调用 Agent 处理传感器事件
-                # 将传感器事件转换为自然语言请求
-                prompt = (
-                    f"【系统底层自动化事件，非人类对话】\n"
-                    f"当前家居环境状态更新：'{event_content}'\n"
-                    f"指令要求：\n"
-                    f"1. 你必须直接自主决策。绝对不要向系统或用户反问“需要我做什么”。\n"
-                    f"2. 如果该事件需要设备响应（如有人进入需开灯/调空调，或设备故障如缠绕需紧急停机），请必须立即调用 transfer_to_iot_controller 工具下达控制指令。\n"
-                    f"3. 绝对不要调用 rag_summarize 查阅说明书，除非人类用户明确提问。\n"
-                    f"4. 决策完成后，用一句话简要汇报你的处理结果。"
-                )
-                loop = asyncio.get_event_loop()
-                # 为传感器事件使用唯一的 thread_id，避免状态污染
-                import time
-                sensor_thread_id = f"sensor_{int(time.time())}"
-                response = await loop.run_in_executor(None, lambda: agent.execute(prompt, thread_id=sensor_thread_id))
-                
-                # 显示 Agent 的主动响应
-                console.print(Panel(
-                    Text(response, style="yellow"),
-                    title=f"Agent (Auto) [{datetime.now().strftime('%H:%M:%S')}]",
-                    border_style="yellow"
-                ))
-            except Exception as e:
-                console.print(f"[bold red]处理失败: {e}[/bold red]")
+        # 仍然使用 create_task，但内部受 agent_lock 约束实现串行执行
+        asyncio.create_task(process_message(message))
         
         console.print()  # 空行分隔
 
@@ -322,16 +424,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="智能家居事件驱动系统")
     parser.add_argument(
         "--mode",
-        choices=["full", "simple", "demo"],
+        choices=["full", "simple", "demo", "debug"],
         default="demo",
-        help="运行模式：full=完整模式（用户+传感器），simple=简化模式（仅用户），demo=演示模式（无需LLM）"
+        help="运行模式：full=完整模式，simple=仅用户，demo=演示模式，debug=调试模式"
     )
     
     args = parser.parse_args()
     
     try:
-        if args.mode == "full":
-            asyncio.run(agentic_main_loop())
+        if args.mode in ["full", "debug"]:
+            asyncio.run(agentic_main_loop(mode=args.mode))
         elif args.mode == "simple":
             asyncio.run(simple_main_loop())
         elif args.mode == "demo":

@@ -13,6 +13,9 @@ chroma_config = load_config(config_path=get_abs_path("config/chroma.yml"))
 prompts_config = load_config(config_path=get_abs_path("config/prompts.yml"))
 agent_config = load_config(config_path=get_abs_path("config/agent.yml"))
 system_config = load_config(config_path=get_abs_path("config/system.yml"))
+home_config = load_config(config_path=get_abs_path("config/home.yml"))
+automation_config = load_config(config_path=get_abs_path("config/automation.yml"))
+debug_commands_config = load_config(config_path=get_abs_path("config/debug_commands.yml"))
 
 
 if __name__ == '__main__':

@@ -1,0 +1,30 @@
+# 智能家居自动化规则配置
+# 格式:
+# - event_keyword: 事件中的关键词
+#   action_hint: 给后台控制中枢的直接指令建议
+#   priority: 优先级 (high/normal)
+
+rules:
+  - event_keyword: "有人进入"
+    action_hint: "请检查该房间灯光是否开启，若光线较暗请打开灯光。同时检查空调是否需要开启到舒适温度(26度)。"
+    priority: "normal"
+    
+  - event_keyword: "用户离开"
+    action_hint: "执行离家节能操作：关闭该房间所有灯光、空调和电视，并关闭窗帘。"
+    priority: "normal"
+    
+  - event_keyword: "烟雾"
+    action_hint: "【紧急】立即关闭厨房所有电器，打开全屋灯光闪烁报警，并通知用户检查火灾隐患。"
+    priority: "high"
+    
+  - event_keyword: "燃气泄漏"
+    action_hint: "【紧急】立即关闭燃气阀门相关设备，打开排风扇，并保持全屋照明开启以供检查。"
+    priority: "high"
+    
+  - event_keyword: "温度达到 30 度"
+    action_hint: "环境温度过高，请立即开启该房间空调并设置为制冷模式，24度。"
+    priority: "normal"
+
+  - event_keyword: "主刷被缠绕"
+    action_hint: "扫地机器人发生故障，请立即执行 stop 指令并报告故障位置。"
+    priority: "high"
