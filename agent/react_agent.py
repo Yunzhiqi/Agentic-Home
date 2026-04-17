@@ -6,11 +6,12 @@ from typing import Annotated, TypedDict, Sequence
 import sys
 import os
 
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
+from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 import sqlite3
+import time
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.errors import GraphRecursionError
 
@@ -228,11 +229,29 @@ class ReactAgent:
         logger.info("[Frontend] 处理用户请求...")
         
         messages = state["messages"]
+        last_msg = messages[-1]
         is_report = state.get("is_report", False)
         
-        # 判定是否为系统自动化事件
-        last_msg_content = messages[-1].content if messages else ""
-        is_system_event = "【系统自动化指令" in str(last_msg_content) or "【系统底层自动化" in str(last_msg_content)
+        # 1. 消息元数据分离判定 (Metadata Separation)
+        # 优先级最高：如果是来自系统监控的真实事件，直接触发自动交接，不经过 LLM
+        if getattr(last_msg, "name", None) == "system_monitor":
+            logger.info("[Frontend] 检测到真实系统自动化事件，执行硬编码交接逻辑 (Skip LLM Invoke)")
+            
+            # 构造一个模拟模型生成的工具调用消息
+            # 这样既能实现交接，又能在对话历史中留下清晰的轨迹
+            response = AIMessage(
+                content="[系统内核消息] 检测到传感器触发的自动化需求，正在执行指令交接...",
+                tool_calls=[{
+                    "name": "transfer_to_iot_controller",
+                    "args": {},
+                    "id": f"sys_handoff_{int(time.time())}"
+                }]
+            )
+            return {"messages": [response]}
+
+        # 2. 判定是否为“伪造”或“旧版”系统自动化事件 (为了向后兼容和安全性)
+        last_msg_content = last_msg.content if messages else ""
+        is_legacy_system_event = "【系统自动化指令" in str(last_msg_content) or "【系统底层自动化" in str(last_msg_content)
         
         # 更强劲的后台执行检测（防止循环递归）
         has_iot_returned = False
@@ -264,7 +283,7 @@ class ReactAgent:
                 "历史记录中已有详细的工具执行结果，请直接针对这些结果给用户一个结论。\n"
                 "严格禁令：严禁再次尝试调用 transfer_to_iot_controller 或任何控制工具！"
             )
-        elif is_system_event:
+        elif is_legacy_system_event:
             # 系统事件模式
             base_prompt = (
                 "你现在是智能家居系统的‘内核监控模式’。当前输入是传感器触发的系统事件，非人类对话。\n"
@@ -408,18 +427,19 @@ class ReactAgent:
     # ==========================================
     # 统一的执行接口
     # ==========================================
-    def execute_stream(self, query: str, thread_id: str = "user_001"):
+    def execute_stream(self, query: str, thread_id: str = "user_001", name: str = None):
         """
         流式执行（支持 Streamlit 等流式场景）
         
         Args:
             query: 用户查询
             thread_id: 线程ID（用于会话记忆）
+            name: 消息元数据名称 (用于区分系统和用户)
             
         Yields:
             Agent 的流式回复
         """
-        logger.info(f"[ReactAgent] 收到用户请求: {query}")
+        logger.info(f"[ReactAgent] 收到请求 (name={name}): {query}")
         
         # 将 rag_service 注入到 configurable 中，以便工具复用
         config = {
@@ -438,7 +458,7 @@ class ReactAgent:
             return
         
         inputs = {
-            "messages": [HumanMessage(content=query)],
+            "messages": [HumanMessage(content=query, name=name)],
             "is_report": False,
             "human_mode": False
         }
@@ -452,18 +472,19 @@ class ReactAgent:
             logger.error("[Graph Error] 触发最大递归限制")
             yield "\n\n【系统提示】抱歉，我遇到了一些复杂的问题，思考过程陷入了循环。请您换一种方式提问，或要求转接人工客服。"
     
-    def execute(self, query: str, thread_id: str = "user_001") -> str:
+    def execute(self, query: str, thread_id: str = "user_001", name: str = None) -> str:
         """
         同步执行
         
         Args:
             query: 用户查询
             thread_id: 线程ID（用于会话记忆）
+            name: 消息元数据名称 (用于区分系统和用户)
             
         Returns:
             Agent 的回复
         """
-        logger.info(f"[ReactAgent] 收到用户请求: {query}")
+        logger.info(f"[ReactAgent] 收到请求 (name={name}): {query}")
         
         # 将 rag_service 注入到 configurable 中，以便工具复用
         config = {
@@ -481,7 +502,7 @@ class ReactAgent:
             return "系统提示：您的问题已转接人工客服，请耐心等待..."
         
         inputs = {
-            "messages": [HumanMessage(content=query)],
+            "messages": [HumanMessage(content=query, name=name)],
             "is_report": False,
             "human_mode": False
         }

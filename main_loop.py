@@ -227,7 +227,7 @@ async def agentic_main_loop(mode="full"):
                 ))
                 try:
                     loop = asyncio.get_event_loop()
-                    response = await loop.run_in_executor(None, lambda: agent.execute(user_input, thread_id=user_thread_id))
+                    response = await loop.run_in_executor(None, lambda: agent.execute(user_input, thread_id=user_thread_id, name="user"))
                     console.print(Panel(
                         Text(response, style="white"),
                         title=f"Agent [{datetime.now().strftime('%H:%M:%S')}]",
@@ -272,7 +272,8 @@ async def agentic_main_loop(mode="full"):
                         f"3. 保持专业简练。"
                     )
                     loop = asyncio.get_event_loop()
-                    response = await loop.run_in_executor(None, lambda: agent.execute(prompt, thread_id=system_thread_id))
+                    # 关键修改：传入 name="system_monitor"
+                    response = await loop.run_in_executor(None, lambda: agent.execute(prompt, thread_id=system_thread_id, name="system_monitor"))
                     console.print(Panel(
                         Text(response, style="yellow"),
                         title=f"Agent (Auto) [{datetime.now().strftime('%H:%M:%S')}]",
