@@ -7,7 +7,9 @@ import asyncio
 import sys
 import os
 import random
+import time
 from datetime import datetime
+from typing import Dict, Any
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -31,8 +33,12 @@ debug_commands = debug_commands_config.get("commands", {})
 
 logger.info(f"[MainLoop] 成功载入 {len(automation_rules)} 条自动化规则和 {len(debug_commands)} 条调试指令")
 
-# 事件队列：用于存储传感器事件
-event_queue = asyncio.Queue()
+# 优先级定义
+PRIORITY_HIGH = 0
+PRIORITY_NORMAL = 1
+
+# 事件队列：使用优先队列，存储格式为 (priority, timestamp, message_dict)
+event_queue = asyncio.PriorityQueue()
 
 # 稳定的 thread_id 以保留会话记忆 (设为全局以便 /clear 修改)
 user_thread_id = "user_chat_001"
@@ -42,6 +48,44 @@ system_thread_id = "system_auto_001"
 agent_lock = asyncio.Lock()
 # 紧急任务标记
 is_priority_processing = False
+
+
+# ==========================================
+# 辅助函数：将事件放入队列
+# ==========================================
+async def emit_event(content: str, event_type: str = "user", metadata: Dict[str, Any] = None):
+    """
+    统一的事件发送函数
+    """
+    if metadata is None:
+        metadata = {}
+    
+    priority = PRIORITY_NORMAL
+    
+    # 根据元数据确定优先级
+    if event_type == "sensor":
+        # 匹配自动化规则确定优先级
+        for rule in automation_rules:
+            if rule["event_keyword"] in content:
+                if rule.get("priority") == "high":
+                    priority = PRIORITY_HIGH
+                metadata["action_hint"] = rule.get("action_hint", "")
+                metadata["rule_priority"] = rule.get("priority", "normal")
+                break
+    elif metadata.get("priority") == "high":
+        priority = PRIORITY_HIGH
+
+    event_data = {
+        "content": content,
+        "type": event_type,
+        "metadata": metadata,
+        "timestamp": datetime.now().strftime("%H:%M:%S")
+    }
+    
+    # 放入优先队列：(优先级, 时间戳, 数据)
+    # 使用 time.time() 确保相同优先级下按时间顺序
+    await event_queue.put((priority, time.time(), event_data))
+    logger.debug(f"[Queue] 已放入事件: {content} (优先级: {priority})")
 
 
 # ==========================================
@@ -71,11 +115,10 @@ async def sensor_simulator_loop():
         # 随机选择一个事件
         room, event_desc = random.choice(sensor_events)
         
-        # 将事件放入队列
-        event_message = f"[传感器事件] {room}: {event_desc}"
-        await event_queue.put(event_message)
+        content = f"{room}: {event_desc}"
+        await emit_event(content, event_type="sensor", metadata={"room": room})
         
-        logger.info(f"[Sensor Simulator] 生成事件: {event_message}")
+        logger.info(f"[Sensor Simulator] 生成事件: {content}")
 
 
 # ==========================================
@@ -97,7 +140,7 @@ async def user_input_loop():
                 os._exit(0)
             
             # 将用户输入放入队列
-            await event_queue.put(f"[用户请求] {user_input.strip()}")
+            await emit_event(user_input.strip(), event_type="user")
 
 
 # ==========================================
@@ -126,7 +169,6 @@ async def debug_input_loop():
             
         if cmd == "/clear":
             # 通过更换 thread_id 变相清除历史记录
-            import time
             new_suffix = int(time.time())
             user_thread_id = f"user_chat_{new_suffix}"
             system_thread_id = f"system_auto_{new_suffix}"
@@ -147,12 +189,12 @@ async def debug_input_loop():
             event_desc = debug_commands.get(cmd)
             if event_desc:
                 console.print(f"[dim]快捷指令匹配成功: {cmd} -> {event_desc}[/dim]")
-                await event_queue.put(f"[传感器事件] {event_desc}")
+                await emit_event(event_desc, event_type="sensor")
             else:
                 console.print(f"[bold red]错误：未找到快捷指令 {cmd}[/bold red]")
         else:
             # 普通输入视为用户请求
-            await event_queue.put(f"[用户请求] {cmd}")
+            await emit_event(cmd, event_type="user")
 
 
 # ==========================================
@@ -180,7 +222,6 @@ async def agentic_main_loop(mode="full"):
     except Exception as e:
         console.print(f"[bold red]✗ 系统初始化失败: {e}[/bold red]")
         console.print("[yellow]提示：请确保已配置 OPENAI_API_KEY 或 DEEPSEEK_API_KEY 环境变量[/yellow]")
-
         return
 
     # 根据模式启动不同的输入监听器
@@ -197,37 +238,30 @@ async def agentic_main_loop(mode="full"):
     console.print("[dim]输入 'exit' 或 'quit' 退出系统[/dim]\n")
 
     # 定义异步处理函数，内部通过 agent_lock 实现串行化
-    async def process_message(msg):
+    async def process_message(priority, _, event_data):
         global is_priority_processing
         
-        # 解析优先级：根据消息内容判定
-        # 注意：这里我们通过检查消息的前缀或内容来判断是否是紧急事件
-        is_high_priority = "优先级：紧急" in msg or "🚨 系统紧急事件" in msg
+        content = event_data["content"]
+        event_type = event_data["type"]
+        metadata = event_data["metadata"]
+        timestamp = event_data["timestamp"]
         
-        # 尝试匹配自动化规则以获取优先级
-        if "[传感器事件]" in msg:
-            event_content = msg.replace("[传感器事件]", "").strip()
-            for rule in automation_rules:
-                if rule["event_keyword"] in event_content:
-                    if rule.get("priority") == "high":
-                        is_high_priority = True
-                    break
+        is_high_priority = priority == PRIORITY_HIGH
 
         # 竞争执行锁 (确保串行执行)
         async with agent_lock:
             if is_high_priority:
                 is_priority_processing = True
                 
-            if msg.startswith("[用户请求]"):
-                user_input = msg.replace("[用户请求]", "").strip()
+            if event_type == "user":
                 console.print(Panel(
-                    Text(user_input, style="bold green"),
-                    title=f"User [{datetime.now().strftime('%H:%M:%S')}]",
+                    Text(content, style="bold green"),
+                    title=f"User [{timestamp}]",
                     border_style="green"
                 ))
                 try:
                     loop = asyncio.get_event_loop()
-                    response = await loop.run_in_executor(None, lambda: agent.execute(user_input, thread_id=user_thread_id, name="user"))
+                    response = await loop.run_in_executor(None, lambda: agent.execute(content, thread_id=user_thread_id, name="user"))
                     console.print(Panel(
                         Text(response, style="white"),
                         title=f"Agent [{datetime.now().strftime('%H:%M:%S')}]",
@@ -236,25 +270,17 @@ async def agentic_main_loop(mode="full"):
                 except Exception as e:
                     console.print(f"[bold red]处理失败: {e}[/bold red]")
             
-            elif msg.startswith("[传感器事件]"):
-                event_content = msg.replace("[传感器事件]", "").strip()
-                
-                # 再次匹配规则用于显示和 Prompt 注入
-                matched_action = ""
-                rule_priority = "normal"
-                for rule in automation_rules:
-                    if rule["event_keyword"] in event_content:
-                        matched_action = rule["action_hint"]
-                        rule_priority = rule.get("priority", "normal")
-                        break
+            elif event_type == "sensor":
+                matched_action = metadata.get("action_hint", "")
+                rule_priority = metadata.get("rule_priority", "normal")
                 
                 current_event_is_high = rule_priority == "high"
                 display_style = "bold red" if current_event_is_high else "bold yellow"
                 title_prefix = "🚨 系统紧急事件" if current_event_is_high else "📡 系统环境事件"
                 
                 console.print(Panel(
-                    Text(f"{event_content}\n" + (f"[dim]匹配规则: {matched_action}[/dim]" if matched_action else ""), style=display_style),
-                    title=f"{title_prefix} [{datetime.now().strftime('%H:%M:%S')}]",
+                    Text(f"{content}\n" + (f"[dim]匹配规则: {matched_action}[/dim]" if matched_action else ""), style=display_style),
+                    title=f"{title_prefix} [{timestamp}]",
                     border_style="red" if current_event_is_high else "yellow"
                 ))
                 
@@ -264,7 +290,7 @@ async def agentic_main_loop(mode="full"):
                     
                     prompt = (
                         f"{prompt_prefix}\n"
-                        f"环境发生变化：'{event_content}'"
+                        f"环境发生变化：'{content}'"
                         f"{action_suggestion}\n"
                         f"你的任务：\n"
                         f"1. 立即判断是否需要操作设备。\n"
@@ -272,7 +298,6 @@ async def agentic_main_loop(mode="full"):
                         f"3. 保持专业简练。"
                     )
                     loop = asyncio.get_event_loop()
-                    # 关键修改：传入 name="system_monitor"
                     response = await loop.run_in_executor(None, lambda: agent.execute(prompt, thread_id=system_thread_id, name="system_monitor"))
                     console.print(Panel(
                         Text(response, style="yellow"),
@@ -290,9 +315,10 @@ async def agentic_main_loop(mode="full"):
 
     # 主循环：从队列获取消息并启动协程
     while True:
-        message = await event_queue.get()
+        # 获取优先级、内部时间戳和数据
+        priority, ts, event_data = await event_queue.get()
         # 仍然使用 create_task，但内部受 agent_lock 约束实现串行执行
-        asyncio.create_task(process_message(message))
+        asyncio.create_task(process_message(priority, ts, event_data))
         
         console.print()  # 空行分隔
 
@@ -314,13 +340,6 @@ async def simple_main_loop():
     
     # 初始化智能家居 Agent
     console.print("[yellow]正在初始化智能家居系统...[/yellow]")
-    # try:
-    #     agent = ReactAgent()
-    #     console.print("[bold green]✓ 系统初始化完成[/bold green]\n")
-    # except Exception as e:
-    #     console.print(f"[bold red]✗ 系统初始化失败: {e}[/bold red]")
-    #     console.print("[yellow]提示：请确保已配置 OPENAI_API_KEY 或 DEEPSEEK_API_KEY 环境变量[/yellow]")
-    #     return
     agent = ReactAgent()
     
     console.print("[dim]输入您的指令开始对话...[/dim]")
@@ -344,7 +363,6 @@ async def simple_main_loop():
             console.print("[dim]处理中...[/dim]")
             loop = asyncio.get_event_loop()
             # 为用户请求使用唯一的 thread_id，避免状态污染
-            import time
             user_thread_id = f"user_{int(time.time())}"
             response = await loop.run_in_executor(None, lambda: agent.execute(user_input.strip(), thread_id=user_thread_id))
             
