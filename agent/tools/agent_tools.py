@@ -59,13 +59,16 @@ def transfer_to_human():
     return "系统提示：已为您呼叫人工客服，请耐心等待。"
 
 
-@tool(description="当用户的意图是控制家里的智能设备（如开灯、扫地、调空调等）或查询实时物理环境状态时，必须调用此工具。无入参。")
-def transfer_to_iot_controller():
+@tool(description="当用户的意图是控制家里的智能设备（如开灯、扫地、调空调等）或查询实时物理环境状态时，必须调用此工具。入参 instruction 包含你要交办给后台的明确具体的指令。")
+def transfer_to_iot_controller(instruction: str):
     """
     移交智能家居控制中枢
     将设备控制任务从前台移交给后台 IoT 控制系统
     
+    Args:
+        instruction: 明确交给后台执行的指令。例如：“请打开客厅的灯”或“请查询卧室空调状态”
+        
     Returns:
         移交提示信息
     """
-    return "系统提示：任务已移交智能家居控制中枢。"
+    return f"系统提示：任务（{instruction}）已移交智能家居控制中枢。"

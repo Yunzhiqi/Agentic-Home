@@ -43,6 +43,10 @@ class AgentState(TypedDict):
     is_report: bool
     human_mode: bool
 
+class BackendState(TypedDict):
+    """独立的后台子图状态，实现与前台对话历史的完全隔离"""
+    messages: Annotated[list[BaseMessage], add_messages]
+
 
 # ==========================================
 # 统一的 React Agent
@@ -82,6 +86,7 @@ class ReactAgent:
         self.frontend_model = chat_model.bind_tools(self.frontend_tools)
         self.backend_model = chat_model.bind_tools(self.backend_tools)
         
+        self._build_backend_graph()
         self._build_graph()
         
         logger.info("[ReactAgent] 初始化完成")
@@ -123,15 +128,44 @@ class ReactAgent:
             sanitized.append(new_msg)
         return sanitized
 
+    def _build_backend_graph(self):
+        """构建独立的后台执行子图"""
+        workflow = StateGraph(BackendState)
+        
+        workflow.add_node("iot_agent", self.iot_agent_node)
+        workflow.add_node("mcp_tools", self.mcp_tools_node)
+        
+        workflow.add_edge(START, "iot_agent")
+        
+        def route_backend(state: BackendState) -> str:
+            last_message = state["messages"][-1]
+            if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+                return "mcp_tools"
+            return END
+            
+        workflow.add_conditional_edges("iot_agent", route_backend)
+        workflow.add_edge("mcp_tools", "iot_agent")
+        
+        self.backend_app = workflow.compile()
+        logger.info("[Graph] 后台隔离子图编译完成")
+
+    def iot_agent_node(self, state: BackendState):
+        """后台执行节点，只接收干净的上下文"""
+        messages = state["messages"]
+        system_msg = SystemMessage(content=iot_backend_prompt)
+        sanitized_history = self._sanitize_messages(messages)
+        messages_with_system = [system_msg] + sanitized_history
+        response = self.backend_model.invoke(messages_with_system)
+        return {"messages": [response]}
+
     def _build_graph(self):
         """构建统一的 LangGraph"""
         workflow = StateGraph(AgentState)
         
         # 添加节点
         workflow.add_node("frontend", self.frontend_node)
-        workflow.add_node("iot_backend", self.iot_backend_node)
+        workflow.add_node("iot_backend", self.iot_backend_node) # 现为 Supervisor
         workflow.add_node("frontend_tools", ToolNode(self.frontend_tools))
-        workflow.add_node("mcp_tools", self.mcp_tools_node) # 自定义节点
         workflow.add_node("human", self.human_node)
         
         # 设置边和路由
@@ -161,18 +195,8 @@ class ReactAgent:
             }
         )
         
-        # 后台 -> 条件路由
-        workflow.add_conditional_edges(
-            "iot_backend",
-            self.route_backend,
-            {
-                "mcp_tools": "mcp_tools",
-                "frontend": "frontend"
-            }
-        )
-        
-        # MCP 工具执行后 -> 返回后台
-        workflow.add_edge("mcp_tools", "iot_backend")
+        # 后台 -> 直接流回前台
+        workflow.add_edge("iot_backend", "frontend")
         
         # 人工节点 -> 结束
         workflow.add_edge("human", END)
@@ -187,7 +211,7 @@ class ReactAgent:
         self.app = workflow.compile(checkpointer=memory)
         logger.info("[Graph] LangGraph 编译完成")
 
-    def mcp_tools_node(self, state: AgentState):
+    def mcp_tools_node(self, state: BackendState):
         """自定义工具执行节点，增加可视化显示和逻辑拦截"""
         from langchain_core.messages import ToolMessage
         
@@ -243,7 +267,7 @@ class ReactAgent:
                 content="[系统内核消息] 检测到传感器触发的自动化需求，正在执行指令交接...",
                 tool_calls=[{
                     "name": "transfer_to_iot_controller",
-                    "args": {},
+                    "args": {"instruction": f"系统告警：{last_msg.content}。请根据标准流程立即处理。"},
                     "id": f"sys_handoff_{int(time.time())}"
                 }]
             )
@@ -253,36 +277,9 @@ class ReactAgent:
         last_msg_content = last_msg.content if messages else ""
         is_legacy_system_event = "【系统自动化指令" in str(last_msg_content) or "【系统底层自动化" in str(last_msg_content)
         
-        # 更强劲的后台执行检测（防止循环递归）
-        has_iot_returned = False
-        iot_tool_count = 0
-        for msg in reversed(messages):
-            # 统计 IoT 节点的活动
-            if hasattr(msg, "tool_call_id"):
-                # 如果发现过 ToolMessage 且来源是设备控制，说明已经进行过后台操作
-                iot_tool_count += 1
-            
-            # 检查后台发出的总结文本
-            if hasattr(msg, "content") and msg.content and not getattr(msg, "tool_calls", None):
-                content_str = str(msg.content)
-                if any(k in content_str for k in ["成功", "失败", "已打开", "已关闭", "调整为", "完成", "记录"]):
-                    has_iot_returned = True
-                    break
-        
-        # 如果在同一个 Session 中工具交互次数过多，强制终止以保护上下文
-        if len(messages) > 15:
-            has_iot_returned = True
-        
-        # 选择提示词
+        # 选择提示词 (清除了防止循环的补丁，因为已经实现状态隔离)
         if is_report:
             base_prompt = report_prompt
-        elif has_iot_returned or iot_tool_count >= 2:
-            # 强化总结逻辑：防止循环
-            base_prompt = (
-                "【强制总结指令】任务执行链条已完成。\n"
-                "历史记录中已有详细的工具执行结果，请直接针对这些结果给用户一个结论。\n"
-                "严格禁令：严禁再次尝试调用 transfer_to_iot_controller 或任何控制工具！"
-            )
         elif is_legacy_system_event:
             # 系统事件模式
             base_prompt = (
@@ -310,23 +307,37 @@ class ReactAgent:
         return {"messages": [response]}
     
     def iot_backend_node(self, state: AgentState):
-        """后台设备控制节点：负责执行具体的设备操作"""
-        logger.info("[IoT Backend] 执行设备控制任务...")
-        
+        """Supervisor节点：提取指令并委托给后台独立子图"""
+        logger.info("[IoT Backend Supervisor] 接收前台委派，启动后台隔离环境...")
         messages = state["messages"]
         
-        # 构建后台提示词
-        system_msg = SystemMessage(content=iot_backend_prompt)
+        instruction = "执行设备控制任务"
+        # 从上下文中找到 transfer_to_iot_controller 工具调用时的 instruction 参数
+        for msg in reversed(messages):
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for call in msg.tool_calls:
+                    if call.get("name") == "transfer_to_iot_controller":
+                        args = call.get("args", {})
+                        if "instruction" in args:
+                            instruction = args["instruction"]
+                            break
+                if instruction != "执行设备控制任务":
+                    break
         
-        # 使用加固后的清洗逻辑
-        sanitized_history = self._sanitize_messages(messages)
-        messages_with_system = [system_msg] + sanitized_history
+        logger.info(f"[IoT Backend Supervisor] 提取到的执行指令: {instruction}")
         
-        response = self.backend_model.invoke(messages_with_system)
+        # 隔离状态：为后台准备干净的消息上下文
+        backend_state = {"messages": [HumanMessage(content=f"请执行以下任务：{instruction}")]}
         
-        logger.info(f"[IoT Backend] 响应生成，是否有工具调用: {bool(getattr(response, 'tool_calls', []))}")
+        # 阻塞调用后台子图
+        result = self.backend_app.invoke(backend_state)
         
-        return {"messages": [response]}
+        # 提取后台子图的最终执行总结
+        final_message = result["messages"][-1]
+        summary_content = final_message.content if hasattr(final_message, "content") else str(final_message)
+        
+        # 将总结作为 AIMessage 返回主图
+        return {"messages": [AIMessage(content=f"【后台设备控制执行完毕】\n{summary_content}")]}
     
     def human_node(self, state: AgentState):
         """人工接管节点"""
@@ -410,19 +421,7 @@ class ReactAgent:
         logger.warning("[Route] 未找到有效的工具执行结果，返回前台")
         return "frontend"
     
-    def route_backend(self, state: AgentState) -> str:
-        """后台节点的条件路由"""
-        messages = state["messages"]
-        last_message = messages[-1]
-        
-        # 检查是否有工具调用
-        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-            logger.info("[Route] 后台需要执行 MCP 工具")
-            return "mcp_tools"
-        
-        # 没有工具调用，说明后台任务完成，返回前台组织回复
-        logger.info("[Route] 后台任务完成，返回前台")
-        return "frontend"
+
     
     # ==========================================
     # 统一的执行接口
