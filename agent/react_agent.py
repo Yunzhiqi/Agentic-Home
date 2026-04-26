@@ -9,7 +9,7 @@ import os
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt import ToolNode, tools_condition
 import sqlite3
 import time
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -137,13 +137,15 @@ class ReactAgent:
         
         workflow.add_edge(START, "iot_agent")
         
-        def route_backend(state: BackendState) -> str:
-            last_message = state["messages"][-1]
-            if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-                return "mcp_tools"
-            return END
-            
-        workflow.add_conditional_edges("iot_agent", route_backend)
+        # 使用 tools_condition 代替自定义路由逻辑
+        workflow.add_conditional_edges(
+            "iot_agent",
+            tools_condition,
+            {
+                "tools": "mcp_tools",
+                END: END
+            }
+        )
         workflow.add_edge("mcp_tools", "iot_agent")
         
         self.backend_app = workflow.compile()

@@ -14,6 +14,7 @@ if project_root not in sys.path:
 
 from state_models import (
     get_home_state, 
+    save_home_state,
     DeviceStatus, 
     DeviceType,
     HomeState
@@ -328,18 +329,22 @@ def control_device(device_id: str, command: str) -> str:
         return f"错误：未找到设备 {device_id}，请检查设备ID是否正确"
     
     # 根据设备类型分发到不同的控制函数
+    result = ""
     if device.device_type == DeviceType.LIGHT:
-        return _control_light(device_id, command)
+        result = _control_light(device_id, command)
     elif device.device_type == DeviceType.AIR_CONDITIONER:
-        return _control_air_conditioner(device_id, command)
+        result = _control_air_conditioner(device_id, command)
     elif device.device_type == DeviceType.CURTAIN:
-        return _control_curtain(device_id, command)
+        result = _control_curtain(device_id, command)
     elif device.device_type == DeviceType.VACUUM:
-        return _control_vacuum(device_id, command)
+        result = _control_vacuum(device_id, command)
     elif device.device_type == DeviceType.TV:
-        return _control_tv(device_id, command)
+        result = _control_tv(device_id, command)
     else:
-        return f"错误：设备类型 {device.device_type} 暂不支持控制"
+        result = f"错误：设备类型 {device.device_type} 暂不支持控制"
+        
+    save_home_state(home)
+    return result
 
 
 @mcp.tool()

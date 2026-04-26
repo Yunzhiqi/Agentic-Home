@@ -1,0 +1,136 @@
+{
+    "rooms": {
+        "客厅": {
+            "room_name": "客厅",
+            "temperature": 26.0,
+            "humidity": 55.0,
+            "is_occupied": true,
+            "brightness": 80,
+            "devices": [
+                {
+                    "device_id": "living_light_001",
+                    "device_type": "灯光",
+                    "status": "运行",
+                    "power_level": 80,
+                    "last_update": "2026-04-26T10:29:38.959621",
+                    "extra_attrs": {
+                        "color": "暖白",
+                        "brightness": 80
+                    }
+                },
+                {
+                    "device_id": "living_ac_001",
+                    "device_type": "空调",
+                    "status": "运行",
+                    "power_level": 60,
+                    "last_update": "2026-04-26T10:29:38.959621",
+                    "extra_attrs": {
+                        "target_temp": 26,
+                        "mode": "制冷"
+                    }
+                },
+                {
+                    "device_id": "living_tv_001",
+                    "device_type": "电视",
+                    "status": "待机",
+                    "power_level": 0,
+                    "last_update": "2026-04-26T10:29:38.959621",
+                    "extra_attrs": {
+                        "channel": 1,
+                        "volume": 30
+                    }
+                },
+                {
+                    "device_id": "living_curtain_001",
+                    "device_type": "窗帘",
+                    "status": "待机",
+                    "power_level": 0,
+                    "last_update": "2026-04-26T10:29:38.959621",
+                    "extra_attrs": {
+                        "position": 100
+                    }
+                },
+                {
+                    "device_id": "vacuum_robot_001",
+                    "device_type": "扫地机",
+                    "status": "待机",
+                    "power_level": 0,
+                    "last_update": "2026-04-26T10:29:38.959621",
+                    "extra_attrs": {
+                        "battery": 85,
+                        "cleaning_mode": "标准",
+                        "current_location": "客厅"
+                    }
+                }
+            ]
+        },
+        "卧室": {
+            "room_name": "卧室",
+            "temperature": 24.0,
+            "humidity": 50.0,
+            "is_occupied": false,
+            "brightness": 0,
+            "devices": [
+                {
+                    "device_id": "bedroom_light_001",
+                    "device_type": "灯光",
+                    "status": "待机",
+                    "power_level": 0,
+                    "last_update": "2026-04-26T10:29:38.959621",
+                    "extra_attrs": {
+                        "color": "暖黄",
+                        "brightness": 0
+                    }
+                },
+                {
+                    "device_id": "bedroom_ac_001",
+                    "device_type": "空调",
+                    "status": "待机",
+                    "power_level": 0,
+                    "last_update": "2026-04-26T10:29:38.959621",
+                    "extra_attrs": {
+                        "target_temp": 24,
+                        "mode": "制冷"
+                    }
+                },
+                {
+                    "device_id": "bedroom_curtain_001",
+                    "device_type": "窗帘",
+                    "status": "待机",
+                    "power_level": 0,
+                    "last_update": "2026-04-26T10:29:38.959621",
+                    "extra_attrs": {
+                        "position": 0
+                    }
+                }
+            ]
+        },
+        "厨房": {
+            "room_name": "厨房",
+            "temperature": 28.0,
+            "humidity": 60.0,
+            "is_occupied": false,
+            "brightness": 100,
+            "devices": [
+                {
+                    "device_id": "kitchen_light_001",
+                    "device_type": "灯光",
+                    "status": "运行",
+                    "power_level": 100,
+                    "last_update": "2026-04-26T10:29:38.959621",
+                    "extra_attrs": {
+                        "color": "冷白",
+                        "brightness": 100
+                    }
+                }
+            ]
+        }
+    },
+    "active_events": [
+        "[10:29:38] 系统初始化完成",
+        "[10:29:38] 客厅检测到有人",
+        "[10:32:04] test"
+    ],
+    "last_user_command": null,
+    "system_mode": "normal"
+}

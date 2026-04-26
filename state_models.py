@@ -2,10 +2,17 @@
 智能家居数字孪生全局状态机模型
 使用 Pydantic V2 定义家庭环境的虚拟状态，并在内存中维护
 """
+import os
+import json
 from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
 from datetime import datetime
+
+# 配置是否使用文件系统作为状态后端
+USE_FILE_BACKED_STATE = True
+STATE_FILE_PATH = os.path.join(os.path.dirname(__file__), "home_state.txt")
+
 
 
 class DeviceType(str, Enum):
@@ -234,15 +241,48 @@ _global_home_state: Optional[HomeState] = None
 def get_home_state() -> HomeState:
     """获取全局家庭状态单例"""
     global _global_home_state
+    
+    if USE_FILE_BACKED_STATE:
+        if os.path.exists(STATE_FILE_PATH):
+            try:
+                with open(STATE_FILE_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    _global_home_state = HomeState.model_validate(data)
+                    return _global_home_state
+            except Exception as e:
+                print(f"读取家庭状态文件失败: {e}，将重新初始化")
+        
+        # 文件不存在或读取失败，初始化并保存
+        _global_home_state = HomeState.init_mock_home()
+        save_home_state(_global_home_state)
+        return _global_home_state
+
+    # 内存模式
     if _global_home_state is None:
         _global_home_state = HomeState.init_mock_home()
     return _global_home_state
+
+
+def save_home_state(home: Optional[HomeState] = None):
+    """保存全局家庭状态"""
+    global _global_home_state
+    if home is not None:
+        _global_home_state = home
+        
+    if USE_FILE_BACKED_STATE and _global_home_state is not None:
+        try:
+            with open(STATE_FILE_PATH, "w", encoding="utf-8") as f:
+                f.write(_global_home_state.model_dump_json(indent=4))
+        except Exception as e:
+            print(f"保存家庭状态文件失败: {e}")
 
 
 def reset_home_state():
     """重置全局家庭状态"""
     global _global_home_state
     _global_home_state = HomeState.init_mock_home()
+    if USE_FILE_BACKED_STATE:
+        save_home_state(_global_home_state)
 
 
 if __name__ == "__main__":
